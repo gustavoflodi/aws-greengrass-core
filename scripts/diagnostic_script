@@ -1,0 +1,279 @@
+#!/bin/bash
+
+echo "🔍 === DIAGNÓSTICO COMPLETO AWS GREENGRASS V2 ==="
+echo "Data/Hora: $(date)"
+echo "Account ID: 864899849825"
+echo "Thing Name: MeuCoreWSLDockerV2"
+echo "Região: us-east-1"
+echo "=========================================================="
+
+# Função para verificar comando
+check_command() {
+    if command -v $1 &> /dev/null; then
+        echo "✅ $1 está disponível"
+        return 0
+    else
+        echo "❌ $1 NÃO está disponível"
+        return 1
+    fi
+}
+
+# 1. Verificar ferramentas básicas
+echo -e "\n🛠️  === VERIFICAÇÃO DE FERRAMENTAS ==="
+check_command aws
+check_command docker
+check_command jq
+
+# 2. Verificar conectividade AWS
+echo -e "\n🌐 === VERIFICAÇÃO DE CONECTIVIDADE AWS ==="
+echo "🔄 Testando credenciais AWS..."
+if aws sts get-caller-identity > /dev/null 2>&1; then
+    ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+    USER=$(aws sts get-caller-identity --query Arn --output text)
+    echo "✅ Conectado à AWS"
+    echo "   Conta: $ACCOUNT"
+    echo "   Usuário: $USER"
+else
+    echo "❌ Falha na conectividade AWS"
+    echo "💡 Verifique: aws configure"
+    exit 1
+fi
+
+# 3. Verificar Thing IoT
+echo -e "\n📱 === VERIFICAÇÃO DO AWS IOT THING ==="
+if aws iot describe-thing --thing-name MeuCoreWSLDockerV2 --region us-east-1 > /dev/null 2>&1; then
+    echo "✅ Thing 'MeuCoreWSLDockerV2' encontrado"
+    
+    # Verificar certificados
+    CERT_COUNT=$(aws iot list-thing-principals --thing-name MeuCoreWSLDockerV2 --region us-east-1 --query 'length(principals)' --output text)
+    echo "   Certificados associados: $CERT_COUNT"
+    
+else
+    echo "❌ Thing 'MeuCoreWSLDockerV2' não encontrado"
+    echo "💡 Verifique se o Thing foi criado corretamente"
+fi
+
+# 4. Verificar Core Device
+echo -e "\n🖥️  === VERIFICAÇÃO DO CORE DEVICE ==="
+if aws greengrassv2 get-core-device --core-device-thing-name MeuCoreWSLDockerV2 --region us-east-1 > /dev/null 2>&1; then
+    echo "✅ Core Device encontrado"
+    
+    STATUS=$(aws greengrassv2 get-core-device --core-device-thing-name MeuCoreWSLDockerV2 --region us-east-1 --query 'status' --output text)
+    echo "   Status: $STATUS"
+    
+    LAST_STATUS=$(aws greengrassv2 get-core-device --core-device-thing-name MeuCoreWSLDockerV2 --region us-east-1 --query 'lastStatusUpdateTimestamp' --output text)
+    echo "   Última atualização: $LAST_STATUS"
+    
+else
+    echo "❌ Core Device não encontrado"
+    echo "💡 Verifique se o Greengrass Core foi instalado e registrado"
+fi
+
+# 5. Verificar Token Exchange Role
+echo -e "\n🔐 === VERIFICAÇÃO DA TOKEN EXCHANGE ROLE ==="
+if aws iam get-role --role-name GreengrassV2TokenExchangeRole > /dev/null 2>&1; then
+    echo "✅ GreengrassV2TokenExchangeRole encontrada"
+    
+    # Verificar políticas anexadas
+    POLICIES=$(aws iam list-attached-role-policies --role-name GreengrassV2TokenExchangeRole --query 'AttachedPolicies[].PolicyName' --output text)
+    echo "   Políticas anexadas: $POLICIES"
+    
+else
+    echo "❌ GreengrassV2TokenExchangeRole NÃO encontrada"
+    echo "💡 Esta é provavelmente a causa do problema!"
+    echo "💡 Execute os comandos de criação da role do tutorial"
+fi
+
+# 6. Verificar associação da role
+echo -e "\n🔗 === VERIFICAÇÃO DA ASSOCIAÇÃO DA ROLE ==="
+if aws greengrassv2 get-associated-role --region us-east-1 > /dev/null 2>&1; then
+    ROLE_ARN=$(aws greengrassv2 get-associated-role --region us-east-1 --query 'RoleArn' --output text)
+    echo "✅ Role associada à conta Greengrass"
+    echo "   Role ARN: $ROLE_ARN"
+else
+    echo "❌ Nenhuma role associada à conta Greengrass"
+    echo "💡 Execute: aws greengrassv2 associate-service-role-to-account"
+fi
+
+# 7. Verificar deployments
+echo -e "\n🚀 === VERIFICAÇÃO DE DEPLOYMENTS ==="
+DEPLOYMENTS=$(aws greengrassv2 list-deployments --target-arn "arn:aws:iot:us-east-1:864899849825:thing/MeuCoreWSLDockerV2" --region us-east-1 --query 'deployments' --output json)
+
+if [ "$DEPLOYMENTS" != "[]" ]; then
+    echo "✅ Deployments encontrados:"
+    
+    # Pegar o deployment mais recente
+    LATEST_DEPLOYMENT=$(echo $DEPLOYMENTS | jq -r '.[0].deploymentId')
+    DEPLOYMENT_STATUS=$(echo $DEPLOYMENTS | jq -r '.[0].deploymentStatus')
+    
+    echo "   Deployment mais recente: $LATEST_DEPLOYMENT"
+    echo "   Status: $DEPLOYMENT_STATUS"
+    
+    # Detalhes do deployment
+    echo -e "\n📋 Detalhes do deployment:"
+    aws greengrassv2 get-deployment --deployment-id $LATEST_DEPLOYMENT --region us-east-1 --query '{DeploymentStatus: deploymentStatus, Components: components}' --output table
+    
+else
+    echo "❌ Nenhum deployment encontrado"
+    echo "💡 Execute o comando de create-deployment"
+fi
+
+# 8. Verificar container Docker
+echo -e "\n🐳 === VERIFICAÇÃO DO CONTAINER DOCKER ==="
+if docker ps --filter "name=greengrass-core-device" --format "table {{.Names}}\t{{.Status}}" | grep -q greengrass-core-device; then
+    echo "✅ Container greengrass-core-device está rodando"
+    
+    # Verificar logs básicos
+    echo "   Últimas 5 linhas do log do container:"
+    docker logs --tail 5 greengrass-core-device 2>/dev/null | sed 's/^/     /'
+    
+else
+    echo "❌ Container greengrass-core-device NÃO está rodando"
+    echo "💡 Execute: docker start greengrass-core-device"
+fi
+
+# 9. Verificar S3 bucket
+echo -e "\n🗂️  === VERIFICAÇÃO DO S3 BUCKET ==="
+if aws s3 ls s3://greengrass-v2-tutorial-giovanni > /dev/null 2>&1; then
+    echo "✅ Bucket S3 acessível"
+    
+    # Verificar artefatos
+    echo "   Artefatos encontrados:"
+    aws s3 ls s3://greengrass-v2-tutorial-giovanni/artifacts/ --recursive | head -5 | sed 's/^/     /'
+    
+else
+    echo "❌ Bucket S3 não acessível"
+    echo "💡 Verifique as credenciais S3 e permissões"
+fi
+
+# 10. Verificar componente
+echo -e "\n🧩 === VERIFICAÇÃO DO COMPONENTE ==="
+COMPONENT_ARN="arn:aws:greengrass:us-east-1:864899849825:component:com.example.HelloWorldGreengrass"
+
+# Listar versões do componente
+echo "🔄 Verificando versões do componente..."
+VERSIONS=$(aws greengrassv2 list-component-versions --arn $COMPONENT_ARN --region us-east-1 --query 'componentVersions[].componentVersion' --output text 2>/dev/null)
+
+if [ ! -z "$VERSIONS" ]; then
+    echo "✅ Componente encontrado com versões: $VERSIONS"
+    
+    # Verificar a versão mais recente
+    LATEST_VERSION=$(echo $VERSIONS | tr ' ' '\n' | sort -V | tail -1)
+    echo "   Versão mais recente: $LATEST_VERSION"
+    
+    # Detalhes da versão mais recente
+    echo "   Detalhes da versão $LATEST_VERSION:"
+    aws greengrassv2 get-component --arn "${COMPONENT_ARN}:${LATEST_VERSION}" --region us-east-1 --query '{Recipe: recipe}' --output text | head -10 | sed 's/^/     /'
+    
+else
+    echo "❌ Componente não encontrado ou sem versões"
+    echo "💡 Execute: aws greengrassv2 create-component-version"
+fi
+
+# 11. Verificar logs no container (se estiver rodando)
+echo -e "\n📝 === VERIFICAÇÃO DE LOGS ==="
+if docker ps --filter "name=greengrass-core-device" --format "{{.Names}}" | grep -q greengrass-core-device; then
+    echo "🔄 Verificando logs no container..."
+    
+    # Verificar se logs existem
+    echo "   Estrutura de logs:"
+    docker exec greengrass-core-device find /greengrass/v2/logs -name "*.log" -type f 2>/dev/null | head -10 | sed 's/^/     /' || echo "     ❌ Não foi possível acessar logs"
+    
+    # Verificar log do componente específico
+    echo "   Log do componente HelloWorldGreengrass:"
+    if docker exec greengrass-core-device test -f /greengrass/v2/logs/com.example.HelloWorldGreengrass.log 2>/dev/null; then
+        echo "     ✅ Log do componente existe"
+        docker exec greengrass-core-device tail -5 /greengrass/v2/logs/com.example.HelloWorldGreengrass.log 2>/dev/null | sed 's/^/       /' || echo "       ⚠️ Não foi possível ler o log"
+    else
+        echo "     ❌ Log do componente não encontrado"
+    fi
+    
+    # Verificar log geral do Greengrass
+    echo "   Log geral do Greengrass:"
+    if docker exec greengrass-core-device test -f /greengrass/v2/logs/greengrass.log 2>/dev/null; then
+        echo "     ✅ Log geral existe"
+        docker exec greengrass-core-device tail -3 /greengrass/v2/logs/greengrass.log 2>/dev/null | sed 's/^/       /' || echo "       ⚠️ Não foi possível ler o log"
+    else
+        echo "     ❌ Log geral não encontrado"
+    fi
+    
+    # Verificar artefatos baixados
+    echo "   Artefatos baixados:"
+    docker exec greengrass-core-device find /greengrass/v2/packages/artifacts-unarchived -name "main.py" -type f 2>/dev/null | sed 's/^/     /' || echo "     ❌ main.py não encontrado"
+    
+else
+    echo "❌ Container não está rodando - não é possível verificar logs"
+fi
+
+# 12. Verificar endpoint IoT
+echo -e "\n🌐 === VERIFICAÇÃO DO ENDPOINT IOT ==="
+IOT_ENDPOINT=$(aws iot describe-endpoint --endpoint-type iot:Data-ATS --region us-east-1 --query 'endpointAddress' --output text 2>/dev/null)
+if [ ! -z "$IOT_ENDPOINT" ]; then
+    echo "✅ Endpoint IoT: $IOT_ENDPOINT"
+    
+    # Testar conectividade (ping básico)
+    if ping -c 1 $IOT_ENDPOINT > /dev/null 2>&1; then
+        echo "   ✅ Endpoint está acessível"
+    else
+        echo "   ⚠️ Endpoint pode não estar acessível (isso é normal em alguns casos)"
+    fi
+else
+    echo "❌ Não foi possível obter endpoint IoT"
+fi
+
+# 13. Resumo e recomendações
+echo -e "\n📊 === RESUMO E RECOMENDAÇÕES ==="
+
+# Verificar problemas críticos
+CRITICAL_ISSUES=0
+
+# Role Token Exchange
+if ! aws iam get-role --role-name GreengrassV2TokenExchangeRole > /dev/null 2>&1; then
+    echo "🚨 CRÍTICO: GreengrassV2TokenExchangeRole não existe"
+    ((CRITICAL_ISSUES++))
+fi
+
+# Associação da role
+if ! aws greengrassv2 get-associated-role --region us-east-1 > /dev/null 2>&1; then
+    echo "🚨 CRÍTICO: Role não associada à conta Greengrass"
+    ((CRITICAL_ISSUES++))
+fi
+
+# Container rodando
+if ! docker ps --filter "name=greengrass-core-device" --format "{{.Names}}" | grep -q greengrass-core-device; then
+    echo "🚨 CRÍTICO: Container Greengrass não está rodando"
+    ((CRITICAL_ISSUES++))
+fi
+
+# Core Device
+if ! aws greengrassv2 get-core-device --core-device-thing-name MeuCoreWSLDockerV2 --region us-east-1 > /dev/null 2>&1; then
+    echo "🚨 CRÍTICO: Core Device não está registrado"
+    ((CRITICAL_ISSUES++))
+fi
+
+# Resultado final
+if [ $CRITICAL_ISSUES -eq 0 ]; then
+    echo -e "\n✅ === DIAGNÓSTICO GERAL: BOM ==="
+    echo "   Não foram encontrados problemas críticos."
+    echo "   Se o componente não está funcionando, verifique:"
+    echo "   1. Logs do componente no container"
+    echo "   2. Permissões IPC no recipe.json"
+    echo "   3. MQTT Test Client no console AWS"
+else
+    echo -e "\n❌ === DIAGNÓSTICO GERAL: PROBLEMAS ENCONTRADOS ==="
+    echo "   $CRITICAL_ISSUES problema(s) crítico(s) encontrado(s)."
+    echo "   Corrija os problemas marcados como 🚨 CRÍTICO primeiro."
+fi
+
+echo -e "\n🛠️  === PRÓXIMOS PASSOS RECOMENDADOS ==="
+echo "1. Se há problemas críticos: corrija-os primeiro usando o tutorial limpo"
+echo "2. Se não há problemas críticos:"
+echo "   a) Verifique logs: docker exec -it greengrass-core-device tail -f /greengrass/v2/logs/com.example.HelloWorldGreengrass.log"
+echo "   b) Verifique MQTT Test Client no console AWS IoT Core"
+echo "   c) Subscribe nos tópicos: greengrass/v2/hello e test/greengrass/hello"
+echo "3. Para debug avançado: execute o script main.py otimizado"
+
+echo -e "\n=========================================================="
+echo "🏁 Diagnóstico completo finalizado em $(date)"
+echo "=========================================================="
+
