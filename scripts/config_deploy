@@ -1,0 +1,251 @@
+
+
+
+
+# ===================================================================
+# COMANDOS PARA DEPLOY DA VERSÃO 1.0.6 - CAR COUNTER GREENGRASS
+# ===================================================================
+
+# ==========================================
+# 1. INSTALAR DEPENDÊNCIAS NO CONTAINER
+# ==========================================
+
+docker exec -it greengrass-core-device bash
+
+# Instalar dependências adicionais para YOLO e processamento de imagem
+pip3 install --upgrade ultralytics opencv-python pandas seaborn matplotlib
+
+# Verificar instalações
+python3 -c "import torch, cv2, pandas; print('✅ Dependências OK')"
+
+exit
+
+# ==========================================
+# 2. CRIAR ESTRUTURA PARA VERSÃO 1.0.6
+# ==========================================
+
+# No WSL - Criar diretórios para v1.0.6 (Car Counter)
+mkdir -p ~/greengrass-car-counter/artifacts/com.example.CarCounterGreengrass/1.0.6/python_code
+mkdir -p ~/greengrass-car-counter/artifacts/com.example.CarCounterGreengrass/1.0.6/data/images
+mkdir -p ~/greengrass-car-counter/artifacts/com.example.CarCounterGreengrass/1.0.6/data/results
+
+# Copiar o código do contador de carros
+cd ~/greengrass-car-counter/artifacts/com.example.CarCounterGreengrass/1.0.6/python_code
+# Cole aqui o código car_counter.py que criamos
+
+# ==========================================
+# 3. BAIXAR IMAGENS DE ESTACIONAMENTO
+# ==========================================
+
+cd ~/greengrass-car-counter/artifacts/com.example.CarCounterGreengrass/1.0.6/data/images
+
+# Imagens de estacionamentos com carros (URLs públicas)
+wget -O parking1.jpg "https://images.unsplash.com/photo-1506905925346-21bda4d32df4?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80"
+wget -O parking2.jpg "https://images.unsplash.com/photo-1563207153-f403bf289096?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80"
+wget -O parking3.jpg "https://images.unsplash.com/photo-1590674899484-d5640e854abe?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80"
+wget -O street_cars1.jpg "https://images.unsplash.com/photo-1449824913935-59a10b8d2000?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80"
+wget -O street_cars2.jpg "https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80"
+
+# Alternativa: Usar imagens menores e mais específicas
+wget -O test_parking.jpg "https://www.gstatic.com/hostedimg/382a91be37543d3b_large"
+
+echo "✅ Imagens de estacionamento baixadas"
+
+# ==========================================
+# 4. CRIAR ARTEFATO E UPLOAD PARA S3
+# ==========================================
+
+cd ~/greengrass-car-counter/artifacts/com.example.CarCounterGreengrass/1.0.6/
+
+# Criar ZIP da v1.0.6
+zip -r car_counter.zip python_code data
+
+# Upload para S3
+aws s3 cp car_counter.zip s3://greengrass-v2-tutorial-giovanni/artifacts/com.example.CarCounterGreengrass/1.0.6/
+
+# ==========================================
+# 5. PREPARAR CONTAINER PARA V1.0.6
+# ==========================================
+
+docker exec -it greengrass-core-device bash
+
+# Criar diretório de artefatos v1.0.6 no container
+mkdir -p /greengrass/v2/packages/artifacts/com.example.CarCounterGreengrass/1.0.6/
+chown -R ggc_user:ggc_group /greengrass/v2/packages/artifacts/com.example.CarCounterGreengrass/1.0.6/
+
+cd /greengrass/v2/packages/artifacts/com.example.CarCounterGreengrass/1.0.6/
+
+# Download do ZIP v1.0.6
+aws s3 cp s3://greengrass-v2-tutorial-giovanni/artifacts/com.example.CarCounterGreengrass/1.0.6/car_counter.zip ./
+unzip car_counter.zip && rm car_counter.zip
+chown -R ggc_user:ggc_group python_code data
+
+# Renomear o script principal para car_counter.py (se necessário)
+if [ -f "python_code/classify.py" ]; then
+    mv python_code/classify.py python_code/car_counter.py
+fi
+
+# Verificar estrutura de arquivos
+ls -la python_code/
+ls -la data/images/
+ls -la data/results/
+
+# Ajustar permissões finais
+chown -R ggc_user:ggc_group /greengrass/v2/packages/artifacts/com.example.CarCounterGreengrass/1.0.6/
+
+exit
+
+# ==========================================
+# 6. CRIAR RECIPE V1.0.6 (CAR COUNTER)
+# ==========================================
+
+cd ~/greengrass-car-counter
+cat > recipe-car-counter-v1.0.6.json << 'EOF'
+{
+  "RecipeFormatVersion": "2020-01-25",
+  "ComponentName": "com.example.CarCounterGreengrass",
+  "ComponentVersion": "1.0.6",
+  "ComponentDescription": "Greengrass V2 Car Counter with YOLOv5 Object Detection",
+  "ComponentPublisher": "AWS",
+  "ComponentDependencies": {
+    "aws.greengrass.Nucleus": {
+      "VersionRequirement": ">=2.0.0"
+    }
+  },
+  "ComponentConfiguration": {
+    "DefaultConfiguration": {
+      "accessControl": {
+        "aws.greengrass.ipc.mqttproxy": {
+          "com.example.CarCounterGreengrass:mqttproxy:1": {
+            "policyDescription": "Allows access to publish car counting results to AWS IoT Core",
+            "operations": [
+              "aws.greengrass#PublishToIoTCore"
+            ],
+            "resources": [
+              "greengrass/v2/car-counter/results"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "Manifests": [
+    {
+      "Platform": {"os": "linux"},
+      "Lifecycle": {
+        "Install": {
+          "RequiresPrivilege": false,
+          "Script": "echo 'Car Counter v1.0.6 - Dependencies should be pre-installed'"
+        },
+        "Run": {
+          "RequiresPrivilege": false,
+          "Script": "/usr/bin/python3 {artifacts:path}/python_code/car_counter.py"
+        }
+      },
+      "Artifacts": [
+        {
+          "Uri": "s3://greengrass-v2-tutorial-giovanni/artifacts/com.example.CarCounterGreengrass/1.0.6/car_counter.zip",
+          "Unarchive": "ZIP"
+        }
+      ]
+    }
+  ]
+}
+EOF
+
+# ==========================================
+# 7. CRIAR COMPONENTE V1.0.6
+# ==========================================
+
+# Criar nova versão do componente Car Counter
+aws greengrassv2 create-component-version --inline-recipe fileb://recipe-car-counter-v1.0.6.json
+
+echo "✅ Componente Car Counter v1.0.6 criado com sucesso!"
+
+# ==========================================
+# 8. PARAR DEPLOYMENT ANTERIOR (OPCIONAL)
+# ==========================================
+
+# Listar deployments atuais
+echo "📋 Listando deployments atuais..."
+aws greengrassv2 list-deployments --target-arn "arn:aws:iot:us-east-1:864899849825:thing/MeuCoreWSLDockerV2"
+
+# Cancelar componente Image Classifier anterior se estiver rodando
+echo "🛑 Para parar o Image Classifier anterior, execute:"
+echo "aws greengrassv2 create-deployment --target-arn \"arn:aws:iot:us-east-1:864899849825:thing/MeuCoreWSLDockerV2\" --components '{}'"
+
+# ==========================================
+# 9. CRIAR DEPLOYMENT V1.0.6 (CAR COUNTER)
+# ==========================================
+
+echo "🚗 Criando deployment do Car Counter v1.0.6..."
+aws greengrassv2 create-deployment \
+  --target-arn "arn:aws:iot:us-east-1:864899849825:thing/MeuCoreWSLDockerV2" \
+  --components '{
+    "com.example.CarCounterGreengrass": {
+      "componentVersion": "1.0.6"
+    }
+  }'
+
+echo "✅ Deployment Car Counter v1.0.6 iniciado!"
+
+# ==========================================
+# 10. MONITORAR DEPLOYMENT
+# ==========================================
+
+echo ""
+echo "📊 Para monitorar o Car Counter:"
+echo "docker exec -it greengrass-core-device tail -f /greengrass/v2/logs/com.example.CarCounterGreengrass.log"
+echo ""
+echo "🚗 Tópico MQTT para resultados de contagem:"
+echo "greengrass/v2/car-counter/results"
+echo ""
+echo "📁 Imagens anotadas serão salvas em:"
+echo "/greengrass/v2/packages/artifacts/com.example.CarCounterGreengrass/1.0.6/data/results/"
+echo ""
+
+# ==========================================
+# 11. COMANDOS DE VERIFICAÇÃO
+# ==========================================
+
+echo "🔍 Comandos úteis para verificação:"
+echo ""
+echo "# Verificar logs em tempo real:"
+echo "docker exec -it greengrass-core-device tail -f /greengrass/v2/logs/com.example.CarCounterGreengrass.log"
+echo ""
+echo "# Verificar imagens no diretório:"
+echo "docker exec -it greengrass-core-device ls -la /greengrass/v2/packages/artifacts/com.example.CarCounterGreengrass/1.0.6/data/images/"
+echo ""
+echo "# Verificar resultados anotados:"
+echo "docker exec -it greengrass-core-device ls -la /greengrass/v2/packages/artifacts/com.example.CarCounterGreengrass/1.0.6/data/results/"
+echo ""
+echo "# Adicionar nova imagem para contagem:"
+echo "docker exec -it greengrass-core-device bash"
+echo "cd /greengrass/v2/packages/artifacts/com.example.CarCounterGreengrass/1.0.6/data/images/"
+echo "wget -O nova_imagem.jpg \"URL_DA_IMAGEM\""
+echo "chown ggc_user:ggc_group nova_imagem.jpg"
+echo "exit"
+echo ""
+
+# ==========================================
+# 12. EXEMPLO DE MENSAGEM MQTT ESPERADA
+# ==========================================
+
+echo "📡 Exemplo de mensagem MQTT que será publicada:"
+cat << 'EOF'
+{
+  "timestamp": "2025-08-24T21:45:00.000Z",
+  "component": "com.example.CarCounterGreengrass",
+  "image_name": "parking1.jpg",
+  "vehicle_detection": {
+    "total_vehicles": 12,
+    "cars": 8,
+    "motorcycles": 2,
+    "buses": 1,
+    "trucks": 1,
+    "confidence_average": 0.78
+  },
+  "thing_name": "MeuCoreWSLDockerV2"
+}
+EOF
+
